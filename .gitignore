@@ -1,0 +1,40 @@
+node_modules/
+dist/
+coverage/
+*.log
+*.tsbuildinfo
+
+.env
+.env.local
+.env.*.local
+
+.DS_Store
+.idea/
+.vscode/
+
+# third-party reference clones (each has its own git history)
+docs/references/
+
+# agent tooling / local state — kept local, never published
+.agents/
+.agent-teams/
+.claude/
+.lead-sessions.json
+skills-lock.json
+
+# internal AI-dev-team coordination + instructions (local only)
+.plans/
+CLAUDE.md
+AGENTS.md
+
+# local-only smoke-test runbook (dev scratch, never published)
+docs/testing/local-agent-smoke-test.md
+
+# throwaway prototypes / protocol probes (superseded by src/)
+prototype/
+
+# local test recordings (binary; keep repo clean)
+docs/tests/
+
+# local-only working assets (scratch images, contact sheets — never published)
+docs/assets/_local/

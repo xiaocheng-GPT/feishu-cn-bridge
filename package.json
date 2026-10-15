@@ -1,0 +1,72 @@
+{
+  "name": "@modelzen/feishu-CN-bridge",
+  "version": "0.6.14",
+  "description": "Bridge Feishu/Lark messenger with local Codex via app-server (project=group, thread=session)",
+  "type": "module",
+  "bin": {
+    "feishu-CN-bridge": "bin/feishu-CN-bridge.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:native-service": "node scripts/test-native-service.mjs",
+    "start": "node bin/feishu-CN-bridge.mjs run",
+    "prepare": "npm run build",
+    "release": "bash scripts/release.sh"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.65.0",
+    "commander": "^12.1.0",
+    "cross-spawn": "^7.0.6",
+    "ogg-opus-decoder": "^1.7.5",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.178",
+    "@types/cross-spawn": "^6.0.6",
+    "@types/node": "^22.10.0",
+    "@types/qrcode-terminal": "^0.12.2",
+    "tsup": "^8.3.5",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "keywords": [
+    "feishu",
+    "lark",
+    "codex",
+    "app-server",
+    "cli",
+    "bridge",
+    "bot"
+  ],
+  "author": "modelzen",
+  "license": "MIT",
+  "homepage": "https://github.com/modelzen/feishu-CN-bridge#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/modelzen/feishu-CN-bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/modelzen/feishu-CN-bridge/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
