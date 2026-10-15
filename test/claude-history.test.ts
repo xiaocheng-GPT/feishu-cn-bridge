@@ -8,8 +8,8 @@ import { foldSessionMessages, mapSessionSummary } from '../src/agent/claude-agen
  */
 const sess = (o: Partial<SDKSessionInfo>): SDKSessionInfo =>
   ({ sessionId: 'x', summary: '', lastModified: 0, ...o }) as SDKSessionInfo;
-const um = (content: unknown): SessionMessage => ({ type: 'user', uuid: 'u', session_id: 's', parent_tool_use_id: null, parent_agent_id: null, message: { role: 'user', content } });
-const am = (content: unknown): SessionMessage => ({ type: 'assistant', uuid: 'a', session_id: 's', parent_tool_use_id: null, parent_agent_id: null, message: { role: 'assistant', content } });
+const um = (content: unknown): SessionMessage => ({ type: 'user', uuid: 'u', session_id: 's', parent_tool_use_id: null, message: { role: 'user', content } });
+const am = (content: unknown): SessionMessage => ({ type: 'assistant', uuid: 'a', session_id: 's', parent_tool_use_id: null, message: { role: 'assistant', content } });
 
 describe('mapSessionSummary', () => {
   it('epoch ms → unix 秒；customTitle 优先于 summary/firstPrompt', () => {
