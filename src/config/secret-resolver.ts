@@ -1,6 +1,6 @@
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { spawnProcess } from '../platform/spawn';
 import { getSecret } from './keystore';
 import { paths } from './paths';
@@ -94,7 +94,9 @@ async function resolveExecRef(
 }
 
 function isSelfBridgeCommand(command: string, args: string[] | undefined): boolean {
-  if (command === paths.secretsGetterScript) return true;
+  // names 固定为 `secrets-getter`，按 basename 匹配可兼容目录迁移前残留的
+  // 旧路径（~/.feishu-codex-bridge/secrets-getter），均短路直读 keystore。
+  if (command === paths.secretsGetterScript || basename(command) === 'secrets-getter') return true;
   if (args && args.length >= 2) {
     const a = args[args.length - 2];
     const b = args[args.length - 1];
