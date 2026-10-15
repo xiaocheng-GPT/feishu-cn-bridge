@@ -1,7 +1,7 @@
 {
   "name": "@modelzen/feishu-cn-bridge",
   "version": "0.6.14",
-  "description": "Bridge Feishu/Lark messenger with local Codex via app-server (project=group, thread=session)",
+  "description": "把飞书 / Lark 桥接到本机 dsh (DeepSeek) / Codex / Claude，面向国内开发环境的适配版",
   "type": "module",
   "bin": {
     "feishu-CN-bridge": "bin/feishu-CN-bridge.mjs"
@@ -56,15 +56,15 @@
     "bridge",
     "bot"
   ],
-  "author": "modelzen",
+  "author": "xiaocheng-GPT <2129837073@qq.com>",
   "license": "MIT",
-  "homepage": "https://github.com/modelzen/feishu-CN-bridge#readme",
+  "homepage": "https://github.com/xiaocheng-GPT/feishu-cn-bridge#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/modelzen/feishu-CN-bridge.git"
+    "url": "git+https://github.com/xiaocheng-GPT/feishu-cn-bridge.git"
   },
   "bugs": {
-    "url": "https://github.com/modelzen/feishu-CN-bridge/issues"
+    "url": "https://github.com/xiaocheng-GPT/feishu-cn-bridge/issues"
   },
   "publishConfig": {
     "access": "public"
