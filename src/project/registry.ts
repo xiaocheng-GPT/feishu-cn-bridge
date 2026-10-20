@@ -66,6 +66,12 @@ export interface Project {
   /** 本项目新话题的默认推理强度。仅当所选 {@link defaultModel} 支持该 effort 时生效，
    * 否则回落该模型的 defaultEffort（claude 等不调 effort 的后端忽略）。 */
   defaultEffort?: ReasoningEffort;
+  /** 评论共享记忆开关：绑定本项目的**文档评论**是否并入项目主会话（= 与群聊共享
+   * 同一 codex 会话/上下文）。false / 缺省 = 隔离（每条评论线程独立记忆，现状）；
+   * true = 评论 sessionKey 并入项目主会话（chatId，角色分离时并入 admin 线程），
+   * 评论回复仍回发到评论线程（postCommentReply），只是上下文互通，且与群聊互斥
+   * 串行执行（同一 codex 线程不能并行两个 turn，见 onComment 的 active 占位）。 */
+  commentSharesSession?: boolean;
 }
 
 /**

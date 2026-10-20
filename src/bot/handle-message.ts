@@ -236,17 +236,20 @@ import {
   commentSessionKey,
   DEFAULT_COMMENT_INSTRUCTIONS,
   loadCommentInstructions,
+  parseDocLink,
   postCommentReply,
   removeCommentReaction,
   renderCommentInstructions,
   REPLY_MAX_CHARS,
   resolveComment,
+  resolveWikiNode,
   saveCommentInstructions,
   stripMarkdown,
   SUPPORTED_FILE_TYPES,
   syncAllCommentInstructions,
   syncCommentInstructions,
 } from './comments';
+import { bindDoc, getDocBinding, listDocBindings, unbindDoc } from './doc-bindings';
 import { createGracefulInterrupt, Semaphore, withIdleTimeout } from './watchdog';
 
 /**
@@ -503,6 +506,10 @@ interface ActiveState {
    * is never consumed — incoming messages get a prompt instead of queueing
    * (they'd be dropped silently at the end otherwise). */
   isGoal?: boolean;
+  /** 文档评论占位（评论共享记忆开启）：评论与群聊共用同一 sessionKey 时，评论侧
+   * 在 active 里放一个只带队列占位的标记，让 prepareTurn/startReservedRun 识别为
+   * 「评论处理中」——群聊消息只提示、不入队（评论收尾不消费队列）。 */
+  isComment?: boolean;
 }
 
 /** Message-reaction lifecycle controller (see {@link runReaction}). */
@@ -1291,6 +1298,14 @@ export function createOrchestrator(
         await replyGoalBusy(msg, flat);
         return;
       }
+      // 🧠 评论占位（评论共享记忆）：评论收尾不消费 queue，入队会被静默丢弃，
+      // 直接提示重发（同 goal 的「告知而不是黑洞」契约）。
+      if (existing.isComment) {
+        await channel
+          .send(msg.chatId, { markdown: '⏳ 该会话正在处理文档评论，本条未进入会话，评论处理完后可重发。' }, { replyTo: msg.messageId, replyInThread: !flat })
+          .catch(() => undefined);
+        return;
+      }
       // Download any images first (best-effort) so the steered/queued turn can
       // carry them. Awaited here — the session is already held by a running
       // turn, so there's no reservation race to protect; gated on
@@ -1417,6 +1432,14 @@ export function createOrchestrator(
       // instead of queueing (same as handleTurn's isGoal gate).
       if (existing.isGoal) {
         void replyGoalBusy(msg, flat);
+        return;
+      }
+      // 🧠 评论占位（评论共享记忆）：评论收尾不消费队列，同 isGoal——提示重发，
+      // 绝不把消息堆进永远不会被消费的队列里（见 prepareTurn 的 isComment 门）。
+      if (existing.isComment) {
+        void channel
+          .send(msg.chatId, { markdown: '⏳ 该会话正在处理文档评论，本条未进入会话，评论处理完后可重发。' }, { replyTo: msg.messageId, replyInThread: !flat })
+          .catch(() => undefined);
         return;
       }
       // A run appeared between handleTurn's check and here (we awaited an image
@@ -2704,7 +2727,8 @@ export function createOrchestrator(
         ...cfg,
         preferences: { ...(cfg.preferences ?? {}), comments: { ...comments } },
       };
-      return buildCommentSettingsCard(snapshot, options, models, notice, selected);
+      const [bindings, projects] = await Promise.all([listDocBindings(), listProjects()]);
+      return buildCommentSettingsCard(snapshot, options, models, notice, selected, bindings, projects.map((p) => ({ name: p.name })));
     }
   }
 
@@ -3549,6 +3573,59 @@ export function createOrchestrator(
         );
       })();
     })
+    // 📎 评论绑定项目：表单提交（锁定卡片）→ 解析链接/token → wiki 链接再解一步拿底层
+    // 文档（与运行期 resolveComment 解析出的 obj_token 对齐）→ 写映射 → 发新卡展示结果。
+    .on(DM.commentBindSubmit, ({ evt, formValue }) => {
+      if (!dmAdmin(evt.operator?.openId)) return;
+      void (async () => {
+        const docLink = typeof formValue?.docLink === 'string' ? formValue.docLink.trim() : '';
+        const projectName = typeof formValue?.project === 'string' ? formValue.project : '';
+        const fail = (msg: string): void =>
+          sendFreshSettingsResult(evt, () => renderCommentSettings(msg), 'comment-bind-validation');
+        if (!docLink || !projectName) return fail('⚠️ 请填写文档链接/ token，并选择一个项目。');
+        const project = await getProjectByName(projectName);
+        if (!project) return fail(`⚠️ 项目「${projectName}」不存在，请刷新后重试。`);
+        const parsed = parseDocLink(docLink);
+        if (!parsed) return fail('⚠️ 无法识别文档链接：请粘贴飞书文档链接（或直接填 file_token）。');
+        let fileType = parsed.kind === 'doc' ? parsed.fileType : '';
+        let fileToken = parsed.fileToken;
+        if (parsed.kind === 'wiki') {
+          const wiki = await resolveWikiNode(channel, parsed.fileToken);
+          if (!wiki) return fail('⚠️ 无法解析该 wiki 节点，请确认权限或改用文档本身的链接。');
+          fileType = wiki.fileType;
+          fileToken = wiki.fileToken;
+        }
+        try {
+          await bindDoc(fileType, fileToken, projectName);
+        } catch (err) {
+          return fail(err instanceof Error ? err.message : String(err));
+        }
+        sendFreshSettingsResult(
+          evt,
+          () =>
+            renderCommentSettings(
+              `✅ 已绑定：「${projectName}」· ${fileType || '未知类型'} · token ${fileToken.slice(-8)}。该文档评论 @我 会直接在该项目里跑。`,
+            ),
+          'comment-bind-result',
+        );
+      })().catch((err) => log.fail('console', err, { phase: 'comment-bind-submit' }));
+    })
+    // 解绑：普通按钮不锁卡，原地 patch 重渲评论设置卡。
+    .on(DM.commentUnbind, ({ evt, value }) => {
+      if (!dmAdmin(evt.operator?.openId)) return;
+      const fileToken = typeof value.v === 'string' ? value.v : '';
+      if (!fileToken) return;
+      void (async () => {
+        const removed = await unbindDoc(fileToken);
+        void patch(evt, () =>
+          renderCommentSettingsFor(
+            evt.messageId,
+            undefined,
+            removed ? '已解除该文档的项目绑定。' : '该文档未绑定任何项目。',
+          ),
+        );
+      })().catch((err) => log.fail('console', err, { phase: 'comment-unbind' }));
+    })
     // In-group settings: toggle 免@ for the project bound to evt.chatId. Admin-gated.
     // 写路径走管理面共享层（admin/ops.ts）——与 DM 卡片 / Web 控制台同一套落盘逻辑。
     .on(GS.setNoMention, ({ evt, value }) => {
@@ -3757,6 +3834,21 @@ export function createOrchestrator(
         if (!r.ok) return buildDmMenuCard({ webConsoleUrl: webConsoleUrl(), version: bridgeVersion() });
         log.info('console', 'project-autocompact', { project: name, on });
         return buildProjectSettingsCard(r.project, backendDisplayName(r.project.backend));
+      });
+    })
+    // 🧠 评论共享记忆：绑定文档的评论并入项目主会话（与群聊共享上下文）的开关。
+    // 只影响之后的评论执行路径（sessionKey 选择），不触碰活跃会话，故直接落盘更新。
+    .on(DM.commentShare, ({ evt, value }) => {
+      if (!dmAdmin(evt.operator?.openId)) return;
+      const name = typeof value.n === 'string' ? value.n : '';
+      const on = value.v === 'on';
+      patch(evt, async () => {
+        const p = await getProjectByName(name);
+        if (!p) return buildDmMenuCard({ webConsoleUrl: webConsoleUrl(), version: bridgeVersion() });
+        await updateProject(name, { commentSharesSession: on });
+        const fresh = (await getProjectByName(name)) ?? p;
+        log.info('console', 'project-comment-share', { project: name, on });
+        return buildProjectSettingsCard(fresh, backendDisplayName(fresh.backend));
       });
     })
     // 🔐 权限：打开下拉表单子卡（管理员档 + 普通用户档 + 联网，选完提交）。
@@ -5174,12 +5266,32 @@ export function createOrchestrator(
       const { target, ctx } = resolved;
       log.info('comment', 'parsed', { isWhole: ctx.isWhole, hasQuote: Boolean(ctx.quote) });
 
-      // One session per comment THREAD (not per doc): distinct threads on the same
-      // doc are independent and run in parallel; replies in a thread continue it.
-      const sessionKey = commentSessionKey(target.fileToken, evt.commentId);
-      // Per-doc working dir, seeded with the user-editable instructions (synced to
-      // AGENTS.md + CLAUDE.md so codex/claude read them natively, no per-turn inject).
-      const cwd = commentCwd(paths.commentsRootDir, target.fileType, target.fileToken);
+      // 项目专属文档：文档在 DM《评论设置》里绑定了项目后，这条评论 @我 复用该项目的
+      // cwd / 后端 / 模型 / 沙箱权限，与群内聊天共创同一代码库。绑定按 file_token 主键
+      // 查；绑定指向的项目已被删除时降级走未绑定路径（评论照常可跑）。
+      const binding = await getDocBinding(target.fileToken);
+      const project = binding ? await getProjectByName(binding.projectName) : undefined;
+      if (binding && !project) {
+        log.warn('comment', 'binding-dangling', { fileToken: target.fileToken, projectName: binding.projectName });
+      }
+
+      // 会话策略：
+      //  - 未绑定 / 绑定未开共享 → One session per comment THREAD (not per doc):
+      //    distinct threads on the same doc run in parallel; replies continue it.
+      //  - 绑定 + 开启「评论共享记忆」(commentSharesSession) → 评论并入项目**主会话**
+      //    （sessionKey = chatId，角色分离时为 <chatId>#<admin>——评论仅管理员触发），
+      //    与群聊共享同一个 codex 会话/上下文；回复仍走 postCommentReply 回评论线程。
+      //    同一线程不能并行两个 turn，故与群聊串行互斥（active 占位，见下方）。
+      const tier = project ? turnTier(project, isAdmin(cfg, operatorId)) : undefined;
+      const shared = project?.commentSharesSession === true;
+      const sessionKey =
+        project && shared && tier
+          ? tier.split
+            ? `${project.chatId}#${tier.role}`
+            : project.chatId
+          : commentSessionKey(target.fileToken, evt.commentId);
+      // 绑定项目 → 直接在项目 cwd 里跑；未绑定 → 独立的 per-doc 评论目录（现状）。
+      const cwd = project ? project.cwd : commentCwd(paths.commentsRootDir, target.fileType, target.fileToken);
       const rawInstructions = await loadCommentInstructions(paths.commentInstructionsFile);
       // Substitute this doc's variables ({fileType}/{fileToken}/{docUrl}) before syncing.
       const instructions = renderCommentInstructions(
@@ -5189,14 +5301,21 @@ export function createOrchestrator(
         target.fileToken,
       );
       let synced = true;
-      await syncCommentInstructions(cwd, instructions).catch((err) => {
+      if (project) {
+        // 绑定场景：绝不动项目根的 AGENTS.md/CLAUDE.md（那属于项目指令，sync 会覆盖掉），
+        // 评论指令改为每轮 prompt 前置注入（下方 synced=false 走 fallback 路径）。
         synced = false;
-        log.warn('comment', 'sync-instructions-failed', { err: err instanceof Error ? err.message : String(err) });
-      });
+      } else {
+        await syncCommentInstructions(cwd, instructions).catch((err) => {
+          synced = false;
+          log.warn('comment', 'sync-instructions-failed', { err: err instanceof Error ? err.message : String(err) });
+        });
+      }
       // Normally the instructions reach the agent via the synced AGENTS.md/CLAUDE.md.
-      // If the sync FAILED (disk/permission), the cwd may lack those files — fall back
-      // to prepending the instructions to this turn's prompt so the machine contract
-      // (don't self-post / plain-text only) never silently vanishes.
+      // If the sync FAILED (disk/permission) — or the doc is project-bound, where we
+      // deliberately don't sync — the cwd may lack those files; prepend the instructions
+      // to this turn's prompt so the machine contract (don't self-post / plain-text
+      // only) never silently vanishes.
       const facts = buildCommentPrompt(target, ctx, cfg.accounts.app.tenant);
       const prompt = synced ? facts : `${instructions}\n\n---\n\n${facts}`;
 
@@ -5215,9 +5334,40 @@ export function createOrchestrator(
         // on the same doc — have distinct codex threads and run in parallel; the
         // global cap is still `sema`, acquired inside the lock.
         await withDocLock(sessionKey, async () => {
+          // 共享记忆：sessionKey 与群聊相同（同一 codex 线程），两个 turn 绝不可并行。
+          // 群聊/另一评论正在跑（active 有占位）→ 评论跳过并明确提示；否则放评论占位
+          // 让群聊消息只提示不入队（prepareTurn/startReservedRun 的 isComment 门）。
+          if (shared && active.get(sessionKey)) {
+            await postCommentReply(
+              channel,
+              target,
+              evt,
+              '⏳ 该项目群聊（或另一条评论）当前正在处理消息，这条评论请稍后再试。',
+            ).catch((err) => log.fail('comment', err, { step: 'postCommentReply-busy' }));
+            log.info('comment', 'skip', { reason: 'session-busy', sessionKey });
+            return;
+          }
+          const marker: ActiveState | undefined = shared ? { queue: [], requesterOpenId: operatorId, isComment: true } : undefined;
+          if (marker) active.set(sessionKey, marker);
           const release = await sema.acquire();
           try {
-            const thread = await resolveDocThread(sessionKey, cwd, instructions, ctx.question);
+            // 绑定项目 → 透传项目级配置（后端/模型/沙箱 tier，评论仅管理员触发故取 admin
+            // 档 tier，语义同群聊话题的 turnPerm）；unset 字段在 resolveDocThread 里回落
+            // 全局《评论设置》。共享场景额外带 shared/chatId：跳过 envKey 指纹（直接复用
+            // 群聊线程/记录），落盘会话的 chatId 用真实项目 chatId（供话题列表/驱逐按
+            // chatId 过滤，roleSuffix 场景不写进 chatId 字段）。
+            const thread = await resolveDocThread(sessionKey, cwd, instructions, ctx.question, project
+              ? {
+                  backend: project.backend,
+                  model: project.defaultModel,
+                  effort: project.defaultEffort,
+                  mode: tier?.mode,
+                  network: project.network,
+                  autoCompact: project.autoCompact,
+                  shared,
+                  chatId: project.chatId,
+                }
+              : undefined);
             const rec = await getSession(sessionKey);
             const run = thread.runStreamed({ text: prompt }, { model: rec?.model, effort: rec?.effort });
 
@@ -5258,6 +5408,9 @@ export function createOrchestrator(
             log.info('comment', 'done', { terminal: state.terminal, timedOut, len: reply.length });
           } finally {
             release();
+            // 共享场景释放在 active 里的评论占位（identity 检查：只清自己的，
+            // 若期间被群聊替换了占用则不动——与 runCompact/runClear 同款守卫）。
+            if (marker && active.get(sessionKey) === marker) active.delete(sessionKey);
           }
         });
       } catch (err) {
@@ -5289,31 +5442,53 @@ export function createOrchestrator(
   }
 
   /** Reuse the in-memory thread for a comment session, else resume the persisted
-   * one, else start a fresh thread in `cwd` (the per-doc comment dir, holding the
-   * synced AGENTS.md / CLAUDE.md). Fresh threads pick their backend + model/effort
-   * from the global comments config; resumed ones keep what they were created with.
-   * `instructions` is the prompt content just synced to the cwd: a live thread read
-   * those files only at start/resume, so if they changed since (user edited the
-   * master prompt) we recycle the live thread to force a re-read. */
+   * one, else start a fresh thread in `cwd` (the per-doc comment dir holding the
+   * synced AGENTS.md / CLAUDE.md, or the bound project dir). Fresh threads pick
+   * their backend + model/effort from `opts` (project-bound prefs) or, when the
+   * doc isn't bound, the global comments config; resumed ones keep the record's
+   * backend but take this turn's sandbox params (mode/network/autoCompact) — same
+   * shape as the group resolveThread. `instructions` is the prompt content just
+   * synced to the cwd: a live thread read those files only at start/resume, so if
+   * they changed since (user edited the master prompt) — or the cwd itself changed
+   * (doc binding switched) — we recycle the live thread to force a re-read. */
   async function resolveDocThread(
     sessionKey: string,
     cwd: string,
     instructions: string,
     question: string,
+    opts?: {
+      backend?: string;
+      model?: string;
+      effort?: ReasoningEffort;
+      mode?: PermissionMode;
+      network?: boolean;
+      autoCompact?: boolean;
+      /** 共享记忆（commentSharesSession）会话：跳过 envKey 指纹比对——live 线程很可能
+       *  就是群聊主线程或同一主会话下的另一评论文档线程，绝不因评论指纹不同而回收它。 */
+      shared?: boolean;
+      /** 共享场景落盘 chatId：项目主会话 chatId（roleSuffix 场景不会写进 chatId 字段，
+       *  群聊话题列表/驱逐按真实 chatId 过滤）。缺省 = sessionKey（隔离场景原样）。 */
+      chatId?: string;
+    },
   ): Promise<AgentThread> {
+    const shared = opts?.shared === true;
+    // cwd 参与指纹：live 线程的 cwd 固定为它 start/resume 时的目录，绑定切换
+    // （评论目录 ↔ 项目目录）后必须弃用，否则旧线程会继续在旧目录里跑。
+    const envKey = `${cwd}\u0000${instructions}`;
     const live = sessions.get(sessionKey);
     if (live) {
       const alive = live.isAlive();
-      // Instructions unchanged + alive → reuse the warm thread (the common case).
-      if (alive && commentInstrUsed.get(sessionKey) === instructions) return live;
-      // Edited prompt (alive but stale) → close the in-memory thread we're discarding
-      // so the resume below re-reads the freshly-synced AGENTS.md/CLAUDE.md. Dead
+      // 共享记忆：live 线程就是项目主会话的线程，直接复用（指令以主会话为准，
+      // 评论只是一轮追加问答）；指纹比对与回收全部跳过。
+      if (alive && (shared || commentInstrUsed.get(sessionKey) === envKey)) return live;
+      // Edited prompt / switched cwd (alive but stale) → close the in-memory thread
+      // we're discarding so the resume below re-reads the freshly-synced files. Dead
       // thread → just evict (与 resolveThread 同款守卫；app-server 死后死线程留在缓存，
       // 每次 @ 评论都立即失败)，落进下面的 resume-or-fresh 兜底自愈。
-      if (alive && commentInstrUsed.get(sessionKey) !== instructions) void live.close().catch(() => undefined);
+      if (alive && !shared && commentInstrUsed.get(sessionKey) !== envKey) void live.close().catch(() => undefined);
       sessions.delete(sessionKey);
-      commentInstrUsed.delete(sessionKey);
-      log.info('agent', alive ? 'comment-instr-changed-evict' : 'dead-thread-evict', { sessionKey });
+      if (!shared) commentInstrUsed.delete(sessionKey);
+      log.info('agent', alive ? 'comment-env-changed-evict' : 'dead-thread-evict', { sessionKey, shared });
     }
     const rec = await getSession(sessionKey);
     if (rec) {
@@ -5324,29 +5499,40 @@ export function createOrchestrator(
           sessionId: rec.sessionId,
           model: rec.model,
           effort: rec.effort,
+          mode: opts?.mode,
+          network: opts?.network,
+          autoCompact: opts?.autoCompact,
         });
         trackSession(sessionKey, resumed);
-        commentInstrUsed.set(sessionKey, instructions);
+        if (!shared) commentInstrUsed.set(sessionKey, envKey);
         return resumed;
       } catch (err) {
         log.fail('agent', err, { phase: 'comment-resume', sessionKey });
       }
     }
-    // Fresh thread: backend + model/effort from the global comments config.
+    // Fresh thread: project-bound opts win, else the global comments config.
     // backendFor falls back to the default backend for an unset/unknown id;
     // pickDefault carries the configured model/effort when the live list supports them.
     const comments = getCommentsConfig(cfg);
-    const be = backendFor(comments.backend);
+    const be = backendFor(opts?.backend ?? comments.backend);
     const { model, effort } = pickDefault(await listModels(be), {
-      model: comments.model,
-      effort: comments.effort,
+      model: opts?.model ?? comments.model,
+      effort: opts?.effort ?? comments.effort,
     });
-    const fresh = await be.startThread({ cwd, model, effort });
+    const fresh = await be.startThread({
+      cwd,
+      model,
+      effort,
+      mode: opts?.mode,
+      network: opts?.network,
+      autoCompact: opts?.autoCompact,
+    });
     trackSession(sessionKey, fresh);
-    commentInstrUsed.set(sessionKey, instructions);
+    if (!shared) commentInstrUsed.set(sessionKey, envKey);
     await upsertSession({
       threadId: sessionKey,
-      chatId: sessionKey,
+      // 共享场景落盘真实项目 chatId（供群聊话题列表/驱逐按 chatId 过滤复用同一条记录）
+      chatId: opts?.chatId ?? sessionKey,
       cwd,
       sessionId: fresh.sessionId,
       backend: be.id,

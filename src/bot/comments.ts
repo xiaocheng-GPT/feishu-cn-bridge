@@ -122,7 +122,7 @@ export async function resolveComment(
  * `wiki:*` scope ungranted) — callers only reach here after the direct token
  * already failed, so a miss just means "give up".
  */
-async function resolveWikiNode(
+export async function resolveWikiNode(
   channel: LarkChannel,
   fileToken: string,
 ): Promise<ResolvedTarget | null> {
@@ -244,6 +244,42 @@ const DOC_URL_PATH: Record<CommentFileType, string> = {
 function buildDocUrl(tenant: TenantBrand, fileType: string, fileToken: string): string {
   const seg = DOC_URL_PATH[fileType as CommentFileType] ?? fileType;
   return `https://${DOC_HOSTS[tenant]}/${seg}/${fileToken}`;
+}
+
+/** 飞书文档链接里的路径段 → 文档类型（与 {@link DOC_URL_PATH} 互逆，但 docs 归 doc、
+ * base 归 bitable，file/其它段不支持）。wiki 链接的真实类型运行时才知道（wiki 节点是
+ * 包装，底下是 doc/docx/sheet/bitable 之一），由调用方 resolveWikiNode 解析。 */
+const DOC_LINK_SEG: Record<string, CommentFileType> = {
+  docs: 'doc',
+  docx: 'docx',
+  sheets: 'sheet',
+  base: 'bitable',
+};
+
+export type ParsedDocLink =
+  | { kind: 'doc'; fileType: CommentFileType; fileToken: string }
+  | { kind: 'wiki'; fileToken: string }
+  | { kind: 'bare'; fileToken: string };
+
+/** 从用户粘贴的内容解析文档标识，用于「评论绑定项目」表单。支持三种形态：
+ * - 完整链接：末段是 file_token，路径段决定类型（docs/docx/sheets/base）；段 = wiki
+ *   说明是知识库节点，类型需调 {@link resolveWikiNode} 再解一步；
+ * - 纯 file_token（无斜杠）：类型未知，绑定按 token 匹配、运行时以事件类型为准。
+ * 无法识别（空 / 含空格 / 未知路径结构）返回 null。 */
+export function parseDocLink(input: string): ParsedDocLink | null {
+  const s = input.trim();
+  if (!s || /\s/.test(s)) return null;
+  const url = /^(?:https?:\/\/)?[^/]+\/([^/]+)\/([A-Za-z0-9_-]+)(?:[?#].*)?$/.exec(s);
+  if (url) {
+    const [, seg, token] = url;
+    if (!seg || !token) return null;
+    const fileType: CommentFileType | undefined = DOC_LINK_SEG[seg];
+    if (fileType) return { kind: 'doc', fileType, fileToken: token };
+    if (seg === 'wiki') return { kind: 'wiki', fileToken: token };
+    return null;
+  }
+  if (/^[A-Za-z0-9_-]{6,}$/.test(s)) return { kind: 'bare', fileToken: s };
+  return null;
 }
 
 /**

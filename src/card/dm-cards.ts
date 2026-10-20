@@ -27,6 +27,7 @@ import {
 } from '../agent/types';
 import { catalogById } from '../agent/catalog';
 import type { SessionRecord } from '../bot/session-store';
+import type { DocBinding } from '../bot/doc-bindings';
 import { labelScope } from '../config/scopes';
 import { summarizeEventDiagnosis, type EventDiagnosis } from '../utils/event-diagnosis';
 import { actions, actionsFixed, button, card, form, hr, input, linkButton, md, note, selectMenu, splitRow, submitButton, type CardElement, type CardObject, type SelectOption } from './cards';
@@ -106,6 +107,8 @@ export const DM = {
   setNoMentionDm: 'dm.proj.noMention',
   // 🗜️ 自动压缩：项目级开关（同群设置里的那个，DM 里也能改），按钮携带项目名 n
   setAutoCompactDm: 'dm.proj.autoCompact',
+  // 🧠 评论共享记忆：绑定项目的文档评论并入项目主会话（与群聊共享上下文）的开关
+  commentShare: 'dm.proj.commentShare',
   // 🤖 默认模型/强度：新话题的起始模型 + 推理强度（选完提交的下拉表单子卡，仿权限卡）
   modelDefault: 'dm.proj.modelDefault',
   modelDefaultSubmit: 'dm.proj.modelDefault.submit',
@@ -121,6 +124,9 @@ export const DM = {
   commentEditPrompt: 'dm.comment.editPrompt',
   commentPromptSubmit: 'dm.comment.promptSubmit',
   commentResetPrompt: 'dm.comment.resetPrompt',
+  // 📎 评论绑定项目：把文档绑到项目后，评论 @我 复用该项目的目录/后端/模型跑
+  commentBindSubmit: 'dm.comment.bindSubmit',
+  commentUnbind: 'dm.comment.unbind',
   // 🏷️ Bridge 新建会话的原生 resume 标题：按后端独立选模型 + Effort。
   sessionTitleSettings: 'dm.sessionTitle.settings',
   sessionTitleSetBackend: 'dm.sessionTitle.setBackend',
@@ -1273,6 +1279,8 @@ export function buildCommentSettingsCard(
   models: ModelInfo[],
   notice?: string,
   selectedBackendId?: string,
+  bindings: DocBinding[] = [],
+  projects: { name: string }[] = [],
 ): CardObject {
   const comments = cfg.preferences?.comments ?? {};
   const visible = models.filter((m) => !m.hidden);
@@ -1364,6 +1372,40 @@ export function buildCommentSettingsCard(
       submitButton('✅ 保存评论配置', { a: DM.commentSubmit, b: curBackend }, 'primary', 'submit_comment'),
     ]));
     els.push(form('comment_model_effort', formEls));
+  }
+
+  els.push(
+    hr(),
+    md('📎 **项目绑定**'),
+    note('把文档绑定到项目后，该文档评论里 @我 会复用项目的目录、后端、模型与权限运行，和群里共创同一个代码库；未绑定的文档仍用上面这套全局评论配置。'),
+  );
+  if (bindings.length > 0) {
+    els.push(md('**当前绑定**'));
+    for (const b of bindings) {
+      els.push(
+        splitRow(
+          md(`**${b.projectName}** · ${b.fileType || '未知类型'} · token ${b.fileToken.slice(-8)}`),
+          button('解绑', { a: DM.commentUnbind, v: b.fileToken }, 'danger'),
+        ),
+      );
+    }
+  }
+  if (projects.length > 0) {
+    els.push(
+      md('**添加绑定**'),
+      form('comment_bind', [
+        input({
+          name: 'docLink',
+          label: '文档链接或 file_token',
+          placeholder: '粘贴飞书文档链接（或直接填 token）',
+          required: true,
+        }),
+        selectMenu({ name: 'project', placeholder: '选择项目', options: projects.map((p) => ({ label: p.name, value: p.name })) }),
+        actions([submitButton('🔗 绑定到项目', { a: DM.commentBindSubmit }, 'primary', 'submit_bind')]),
+      ]),
+    );
+  } else {
+    els.push(note('还没有项目：先在「📁 项目」里创建一个，或把机器人拉进群后绑定。'));
   }
 
   els.push(
@@ -1836,6 +1878,7 @@ export function buildProjectSettingsCard(
     | 'backend'
     | 'defaultModel'
     | 'defaultEffort'
+    | 'commentSharesSession'
   >,
   backendName?: string,
   notice?: string,
@@ -1843,6 +1886,7 @@ export function buildProjectSettingsCard(
   const kind = project.kind ?? 'multi';
   const noMention = project.noMention ?? defaultNoMention(project);
   const autoCompact = project.autoCompact ?? true;
+  const commentShare = project.commentSharesSession === true;
   return card(
     [
       ...(notice ? [md(notice)] : []),
@@ -1874,6 +1918,17 @@ export function buildProjectSettingsCard(
         button('关', { a: DM.setAutoCompactDm, v: 'off', n: project.name }, autoCompact ? 'default' : 'primary'),
       ]),
       note('开启后：上下文接近上限时 Codex 自动总结早前对话、释放空间（默认开）。改动下一轮会话生效。'),
+      hr(),
+      md('🧠 评论共享记忆'),
+      actions([
+        button('开', { a: DM.commentShare, v: 'on', n: project.name }, commentShare ? 'primary' : 'default'),
+        button('关', { a: DM.commentShare, v: 'off', n: project.name }, commentShare ? 'default' : 'primary'),
+      ]),
+      note(
+        commentShare
+          ? '已开启：该项目绑定的**文档评论**与群聊共享同一代码库记忆（上下文互通）。评论与群聊需**串行**处理，一方处理中另一方会提示稍后。'
+          : '关（默认）：绑定文档的评论与群聊各自独立记忆、互不影响，可并行处理。仅影响已绑定项目的文档评论。',
+      ),
       hr(),
       md('🤖 默认模型 / 推理强度'),
       actions([button('设置默认模型', { a: DM.modelDefault, n: project.name }, 'primary')]),

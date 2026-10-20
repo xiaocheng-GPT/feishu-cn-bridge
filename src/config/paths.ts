@@ -85,6 +85,11 @@ export const paths = {
   get commentsRootDir(): string {
     return join(currentBotDir, 'comments');
   },
+  /** 云文档评论 → 项目绑定的映射文件（当前 bot）：fileToken → projectName。
+   * 绑定后该文档评论 @bot 复用项目 cwd / 后端 / 模型 / 沙箱权限跑。 */
+  get docBindingsFile(): string {
+    return join(currentBotDir, 'doc-bindings.json');
+  },
   /**
    * Local CLI hook IPC endpoint for the current bot. macOS/Linux use a Unix
    * domain socket file; Windows has none, so Node maps a `\\.\pipe\…` path to a
