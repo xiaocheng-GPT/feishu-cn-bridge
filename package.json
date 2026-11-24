@@ -1,5 +1,5 @@
 {
-  "name": "@modelzen/feishu-cn-bridge",
+  "name": "feishu-cn-bridge",
   "version": "0.6.14",
   "description": "把飞书 / Lark 桥接到本机 dsh (DeepSeek) / Codex / Claude，面向国内开发环境的适配版",
   "type": "module",

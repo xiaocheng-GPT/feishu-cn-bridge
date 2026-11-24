@@ -31,7 +31,7 @@
 
 ```bash
 # 1. 全局安装 Bridge
-npm i -g @modelzen/feishu-cn-bridge
+npm i -g feishu-cn-bridge
 
 # 2. 打开本机网页控制台
 # 启动服务、添加好机器人后，这条前台命令即可 Ctrl+C 关闭
@@ -48,7 +48,7 @@ feishu-CN-bridge web
 1) 先 node -v 确认有 Node.js(≥20)，没有就先装好；
 2) 再确认 agent CLI：dsh (npm i -g @deepseek-ai/dsh)、codex CLI 至少装一个；
 3) 全局安装：
-   npm i -g @modelzen/feishu-cn-bridge
+   npm i -g feishu-cn-bridge
 4) 前台运行，打开本机 Web 控制台：
    feishu-CN-bridge web
    它一启动会打印一个 http://127.0.0.1:xxxx/?token=... 的链接。
