@@ -16,6 +16,17 @@ import { dshVersionAsync, resolveDshBinary, type DshBinary } from './locate';
 import { DshThread } from './thread';
 
 /**
+ * dsh 的权限档只从环境变量 `DSH_PERMISSION_MODE` 读取（ACP 没有该字段），
+ * 缺省是 workspace-write。本适配器只支持 full，因此固定下发 danger-full-access：
+ * 让「完全访问」真正生效，并绕过 dsh 的 Windows ACL 沙箱——后者要对工作区
+ * grantWrite（改 SACL 打 Low 完整性标签），而 DACL 仅授予 Modify、缺
+ * WRITE_OWNER 时会直接报 `SetNamedSecurityInfoW failed (Win32 5): grantWrite`。
+ */
+const DSH_FULL_ACCESS_ENV: Record<string, string> = {
+  DSH_PERMISSION_MODE: 'danger-full-access',
+};
+
+/**
  * DshAdapter —— DeepSeek 官方 CLI（dsh，`--profile acp`）作为 Agent 后端。
  * ACP 是纯消息通道：Agent 在本机跑，飞书经本桥接器转发对话。能力面较 codex
  * 精简（无 goal/steer/compact/审批），resume 走 dsh 磁盘持久化的会话。
@@ -181,7 +192,7 @@ export class DshAdapter implements AgentBackend {
   private async spawn(cwd: string): Promise<AcpClient> {
     const bin = resolveDshBinary();
     if (!bin) throw new Error('dsh CLI not found (npm i -g @deepseek-ai/dsh or set DSH_BIN)');
-    const client = new AcpClient({ bin: bin.bin, isNodeScript: bin.isNodeScript, cwd });
+    const client = new AcpClient({ bin: bin.bin, isNodeScript: bin.isNodeScript, cwd, env: DSH_FULL_ACCESS_ENV });
     await client.connect();
     return client;
   }
@@ -193,6 +204,7 @@ export class DshAdapter implements AgentBackend {
       isNodeScript: bin.isNodeScript,
       cwd: process.cwd(),
       clientName: 'feishu-CN-bridge-probe',
+      env: DSH_FULL_ACCESS_ENV,
     });
     await client.connect();
     return client;

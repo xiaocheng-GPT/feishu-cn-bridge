@@ -77,6 +77,9 @@ export interface AcpClientOptions {
   profile?: string;
   cwd: string;
   clientName?: string;
+  /** 追加到子进程环境的变量（同名覆盖）。ACP 只承载对话，dsh 的权限档等
+   * 部署级开关没有协议字段，只能经环境变量下发。 */
+  env?: Record<string, string>;
 }
 
 /** 简单异步队列（同 codex-appserver/app-server-client 的内部实现）。 */
@@ -172,7 +175,7 @@ export class AcpClient {
       : ['--profile', profile];
     const child = spawnProcess(command, args, {
       cwd: this.opts.cwd,
-      env: mergeProcessEnv(process.env, { FEISHU_CN_BRIDGE: '1' }),
+      env: mergeProcessEnv(process.env, { FEISHU_CN_BRIDGE: '1', ...(this.opts.env ?? {}) }),
       stdio: ['pipe', 'pipe', 'pipe'],
     }) as ChildProcessWithoutNullStreams;
     this.child = child;
